@@ -3,11 +3,13 @@ import collections
 from typing import Any, Tuple
 import subprocess, os
 import datetime
+import json
 
 global_ratio = 0.02
 
 options_for_all = collections.OrderedDict()
 
+options_for_all["Ratio"] = [0.01, 0.02, 0.04, 0.1, 1.]
 options_for_all["Machines"] = [6, 12]
 options_for_all["MemoryInGB"] = [10]
 options_for_all["Cores"] = [1]
@@ -17,11 +19,11 @@ options_for_all["PipelineId"] = [0, 1, 2]
 spark_options = {
     "Serialization": [
         "gehring.uima.distributed.serialization.UimaSerialization"
-        #"gehring.uima.distributed.serialization.XmiCasSerialization"
+        # "gehring.uima.distributed.serialization.XmiCasSerialization"
     ],
     "Compression": [
         "gehring.uima.distributed.compression.NoCompression"
-        #"gehring.uima.distributed.compression.ZLib"
+        # "gehring.uima.distributed.compression.ZLib"
     ]
 }
 
@@ -32,10 +34,13 @@ def sparkle(machines, memory, cores, size, serializer, compression, pipeline, ra
     print("Sparkling with " + str(machines) + " machines, each having " + str(cores) + " cores and " + str(
         memory) + "GB memory.")
     print("Using '" + serializer + "' and '" + compression + "'.")
-    print("Only looking at files between " + str(size[0]) + "KB and " + str(size[1]) + "KB.")
+    print(
+        "Only looking at " + str(ratio * 100) + "% of files between " + str(size[0]) + "KB and " + str(size[1]) + "KB.")
+    print("Using pipeline " + str(pipeline) + ".")
+    global spark_count
     log_directory = "/home/simon.gehring/master-logs/spark_" + str(spark_count) + "/"
     os.chdir("/home/simon.gehring/git/master-thesis-spark")
-    global spark_count
+
     spark_count += 1
     current_environment = os.environ.copy()
     current_environment.update({
@@ -49,7 +54,8 @@ def sparkle(machines, memory, cores, size, serializer, compression, pipeline, ra
         "CORES_PER_MACHINE": str(cores),
         "DOCUMENT_DIR": "/home/simon.gehring/git/master-thesis-spark/documents",
         "SUP_SINGLE_INSTANCE": "",
-        "SUP_PIPELINE_ID": str(pipeline)
+        "SUP_PIPELINE_ID": str(pipeline),
+        "SUP_SKIP_COLLECTION": "--skip-collection"
     })
     command = [
         "docker-compose",
@@ -75,10 +81,13 @@ uima_count = 0
 def uimale(machines, memory, cores, size, pipeline, ratio=1.0):
     print("UIMA AS-ing with " + str(machines) + " machines, each having " + str(cores) + " cores and " + str(
         memory) + "GB memory.")
-    print("Only looking at files between " + str(size[0]) + "KB and " + str(size[1]) + "KB.")
+    print(
+        "Only looking at" + str(ratio * 100) + "% of files between " + str(size[0]) + "KB and " + str(size[1]) + "KB.")
+    print("Using pipeline " + str(pipeline) + ".")
+    global uima_count
     log_directory = "/home/simon.gehring/master-logs/uima_" + str(uima_count) + "/"
     os.chdir("/home/simon.gehring/git/master-thesis-uimaas")
-    global uima_count
+
     uima_count += 1
     current_environment = os.environ.copy()
     current_environment.update({
@@ -135,10 +144,15 @@ single_count = 0
 def single(memory, cores, size, machines, pipeline, ratio=1.0):
     print("Single threaded with " + str(machines) + " x " + str(cores) + " = " + str(machines * cores) + " cores and " +
           str(machines) + " x " + str(memory) + " = " + str(memory * machines) + "GB memory.")
+    print(
+        "Only looking at" + str(ratio * 100) + "% of files between " + str(size[0]) + "KB and " + str(size[1]) + "KB.")
+    print("Using pipeline " + str(pipeline) + ".")
     global single_count
-    single_count += 1
+
     log_directory = "/home/simon.gehring/master-logs/single_" + str(single_count) + "/"
     os.chdir("/home/simon.gehring/git/master-thesis-spark")
+
+    single_count += 1
     current_environment = os.environ.copy()
     current_environment.update({
         "SUP_GUTENBERG_RATIO": str(ratio),
@@ -163,7 +177,7 @@ def single(memory, cores, size, machines, pipeline, ratio=1.0):
     try:
         result = subprocess.check_output(" ".join(command), shell=True, env=current_environment)
         result = result.decode('unicode-escape')
-        f = open('/home/simon.gehring/master-logs/submitter_single_'+str(single_count)+'.log', 'w')
+        f = open('/home/simon.gehring/master-logs/submitter_single_' + str(single_count) + '.log', 'w')
         f.write(result)
         f.close()
     except subprocess.CalledProcessError as e:
@@ -191,8 +205,16 @@ for general_config in itertools.product(*options_for_all.values()):  # type: Tup
         print("Spark config " + str(spark_opt_count) + "/" + str(num_spark_opts))
         total_count += 1
         print(
-            "Total " + str(total_count) + "/" + str(num_spark_opts * num_options) + " (+" + str(num_options + 1) + ")")
+            "Total " + str(total_count) + "/" + str(num_spark_opts * num_options))
         spark_config = {k: val for k, val in zip(spark_options, spark_config)}
+
+        f = open('/home/simon.gehring/master-logs/config_spark_' + str(total_count) + '.json', 'w')
+        json.dump({
+            "general_config": general_config,
+            "spark_config": spark_config
+        }, f, sort_keys=True, indent=4)
+        f.close()
+
         before = print_time()
         sparkle(
             machines=general_config["Machines"],
@@ -202,17 +224,23 @@ for general_config in itertools.product(*options_for_all.values()):  # type: Tup
             serializer=spark_config["Serialization"],
             compression=spark_config["Compression"],
             pipeline=general_config["PipelineId"],
-            ratio=global_ratio
+            ratio=general_config["Ratio"]
         )
         print_time(before)
-    print("Finished Spark for current general option.")
-    before=print_time()
-    single(memory=general_config["MemoryInGB"], cores=general_config["Cores"], machines=general_config["Machines"],
-           size=general_config["SizeInKB"],pipeline=general_config["PipelineId"], ratio=global_ratio)
-    before = print_time(before)
-    uimale(machines=general_config["Machines"], memory=general_config["MemoryInGB"], cores=general_config["Cores"],
-           size=general_config["SizeInKB"],pipeline=general_config["PipelineId"], ratio=global_ratio)
-    print_time(before)
+    # print("Finished Spark for current general option.")
+    # before=print_time()
+    # f = open('/home/simon.gehring/master-logs/config_' + str(opt_count) + '.json', 'w')
+    # json.dump({
+    #    "general_config": general_config
+    # }, f, sort_keys=True, indent=4)
+    # f.close()
+
+    # single(memory=general_config["MemoryInGB"], cores=general_config["Cores"], machines=general_config["Machines"],
+#           size=general_config["SizeInKB"],pipeline=general_config["PipelineId"], ratio=general_config["Ratio"])
+#   before = print_time(before)
+#    uimale(machines=general_config["Machines"], memory=general_config["MemoryInGB"], cores=general_config["Cores"],
+#           size=general_config["SizeInKB"],pipeline=general_config["PipelineId"], ratio=general_config["Ratio"])
+#    print_time(before)
 """
 
 #!/bin/bash
